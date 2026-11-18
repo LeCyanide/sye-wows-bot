@@ -75,7 +75,9 @@ export async function failureMessage(error: unknown, dataDir: string): Promise<s
 
   switch (error.code) {
     case 'unsupported_version': {
-      const version = /game version (\S+(?: \(build \d+\))?)/.exec(error.message)?.[1];
+      // "game version 13.0.0 (build 7)" reads "13.0.0, build 7" inside the reply's own brackets.
+      const match = /game version (\S+)(?: \(build (\d+)\))?/.exec(error.message);
+      const version = match ? `${match[1]}${match[2] ? `, build ${match[2]}` : ''}` : undefined;
       let have = '';
       try {
         const versions = await supportedVersions(dataDir);

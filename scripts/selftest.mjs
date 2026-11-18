@@ -426,7 +426,7 @@ const PLAN_TOKEN = 'selftest-token-long-enough-to-pass';
     const error = await renderReplay({ input: Buffer.from('x'), binary: binary('old'), dataDir, timeoutMs: 10_000 }).catch((e) => e);
     assert.ok(error instanceof RenderError);
     const message = await failureMessage(error, dataDir);
-    assert.match(message, /13\.0\.0 \(build 7\)/);
+    assert.match(message, /yet \(13\.0\.0, build 7\)\./);
     assert.match(message, /I can render 15\.9\.0, 15\.10\.0\./);
     assert.doesNotMatch(message, /srv|13533378/);
   });
