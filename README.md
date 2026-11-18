@@ -11,6 +11,9 @@ Optionally it also turns replays into videos: `/render` with a `.wowsreplay`
 attached answers with an MP4 of the minimap and the battle panel. See
 [Replays to video](#5-replays-to-video-optional).
 
+The suite and the hosted replay renderer are at
+[projects.fw-suite.de](https://projects.fw-suite.de/).
+
 ## What you need
 
 - A server reachable on ports 80 and 443 (any small VPS).
