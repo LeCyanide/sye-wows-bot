@@ -14,7 +14,7 @@ RUN npm run build
 # 2 GB of memory the first time; Docker caches it after that. To update,
 # change REPLAY_PARSER_REF to a newer commit of replay-parser's main.
 FROM rust:1-bookworm AS render
-ARG REPLAY_PARSER_REF=14a4c3639570bba962900f0614905f861d3cc313
+ARG REPLAY_PARSER_REF=4fc2a94d65ffd8911ebcd364d012d8c1b56ec19a
 # nasm: OpenH264's x86 SIMD kernels (without it encoding is about 2x slower).
 RUN apt-get update && apt-get install -y --no-install-recommends nasm && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
