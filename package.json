@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Self-hostable Discord bot for the WoWs Tactics Suite: Connect Discord and Share to Discord",
+  "description": "Self-hostable Discord bot for the WoWs Tactics Suite: Connect Discord, Share to Discord and /render",
   "main": "index.js",
   "engines": {
     "node": ">=24"

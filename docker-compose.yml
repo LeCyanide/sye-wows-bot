@@ -17,8 +17,13 @@ services:
       DB_PATH: /data/bot.db
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: "8787"
+      # /render: the image's renderer and the game data folder mounted below.
+      # With that folder empty, /render stays off.
+      WOWS_RENDER_BIN: /usr/local/bin/wows-render
+      WOWS_DATA_DIR: /wows-data
     volumes:
       - bot-data:/data
+      - ${WOWS_DATA:-./wows-data}:/wows-data:ro
     # Not published: only Caddy reaches it.
     expose:
       - "8787"

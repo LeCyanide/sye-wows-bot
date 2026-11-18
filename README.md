@@ -7,6 +7,10 @@ Members press **Connect Discord** in the suite's Settings once, sign in with
 Discord, and can then share a plan straight into a channel. The bot posts it
 under their name, and only in channels where they could post themselves.
 
+Optionally it also turns replays into videos: `/render` with a `.wowsreplay`
+attached answers with an MP4 of the minimap and the battle panel. See
+[Replays to video](#5-replays-to-video-optional).
+
 ## What you need
 
 - A server reachable on ports 80 and 443 (any small VPS).
@@ -151,7 +155,7 @@ Keep `.env` private: it holds the bot token and client secret.
 On first start the bot logs an invite link. Or use:
 
 ```
-https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot&permissions=52224
+https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot%20applications.commands&permissions=52224
 ```
 
 That grants View Channel, Send Messages, Embed Links and Attach Files, which
@@ -161,6 +165,74 @@ is all it needs.
 
 Each member enters `https://bot.example.com` under **Settings → Share to Discord →
 Bot** in the suite, then presses **Connect Discord**.
+
+## 5. Replays to video (optional)
+
+`/render` takes a replay and posts a video of the battle in the channel:
+1080×720, 32× speed, at most 8 MB, usually ready in 5 to 15 seconds. Any
+member can use it; renders run one at a time, with up to three waiting.
+
+It needs two things beside the bot: the renderer, `wows-render` from
+[replay-parser](https://github.com/LeCyanide/replay-parser), and a **data
+pack** made from your own game install. The data pack holds Wargaming's game
+files, so it is not shipped anywhere: you build it yourself and keep it
+private. The command only appears in Discord once both are set up.
+
+### The data pack
+
+On a machine with World of Warships installed, with
+[Rust](https://rustup.rs) and Git (on Windows, run this in Git Bash):
+
+```bash
+git clone https://github.com/LeCyanide/replay-parser.git
+git clone --depth 1 https://github.com/LeCyanide/tactics-suite.git
+cd replay-parser
+scripts/build-data.sh "<game install>" ../tactics-suite/seed/maps ./wows-data 15_10_0
+```
+
+`<game install>` is the folder holding `bin/` and `res_packages/`, for
+example `C:/Games/World_of_Warships`. The last value is the game version
+with underscores. Copy the resulting `wows-data` folder to the server.
+
+After every game patch, run it again with the new version into the same
+folder. Older versions stay in it, so older replays still render. Replays of
+a version the pack does not have get a short answer naming the versions it
+can render.
+
+### With Docker (Option A)
+
+The image already builds the renderer. Put the data pack at `wows-data/`
+beside `docker-compose.yml` (or set `WOWS_DATA` in `.env` to its folder) and
+rebuild:
+
+```bash
+sudo docker compose up -d --build
+sudo docker compose logs bot | grep render    # "/render is on"
+```
+
+The first build compiles the renderer, which takes a few minutes and about
+2 GB of memory; later builds reuse it.
+
+### Without Docker (Option B)
+
+Build the renderer on the server, with Rust, a C/C++ compiler and `nasm`:
+
+```bash
+sudo apt install -y build-essential nasm
+git clone https://github.com/LeCyanide/replay-parser.git
+cd replay-parser && cargo build --release -p wows-replay-render --bin wows-render
+sudo install -m 755 target/release/wows-render /usr/local/bin/
+```
+
+Copy the data pack to `/opt/tactics-bot/wows-data`, then add to `.env` and
+restart the bot:
+
+```
+WOWS_RENDER_BIN=/usr/local/bin/wows-render
+WOWS_DATA_DIR=/opt/tactics-bot/wows-data
+```
+
+The log says `/render is on`, or why it is off.
 
 ## For help
 
@@ -172,6 +244,9 @@ Most problems come down to one of these:
   OAuth2 tab must be exactly `PUBLIC_URL` followed by `/link/callback`.
 - **A channel is missing from the list**: the bot needs View Channel, Send
   Messages, Embed Links and Attach Files there, and so does the person sharing.
+- **`/render` doesn't show up in Discord**: the log says why it is off. The
+  data folder must contain `defs/`. If the bot was added before, re-add it
+  with the invite link above so it may create commands.
 - **`/health` doesn't answer**: check that the hostname points at the server,
   ports 80 and 443 are open, and the log (`docker compose logs bot` or
   `journalctl -u tactics-bot`) shows no error.
@@ -190,12 +265,15 @@ person's current roles in Discord.
 | `src/link.ts` | The Connect Discord sign-in and the per-person permission checks |
 | `src/db.ts`, `src/migrations.ts` | One SQLite file holding which app tokens belong to whom |
 | `src/config.ts` | Reads and checks `.env` |
+| `src/render/command.ts` | `/render`: the command and its replies |
+| `src/render/replay.ts` | Replay checks, the size-capped download, the queue, failure messages |
+| `src/render/wows-render.ts` | Runs `wows-render`; copied from replay-parser's `bindings/node` |
 
 ## Development
 
 ```bash
 npm run typecheck
-npm run selftest    # endpoints and sign-in, against stubs
+npm run selftest    # endpoints, sign-in and /render, against stubs
 npm run dev         # runs from source, restarts on changes
 ```
 
