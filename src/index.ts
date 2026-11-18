@@ -2,12 +2,14 @@
  * Entry point. Opens the database, connects to Discord, and serves the
  * endpoints the suite talks to.
  *
- * The bot has no slash commands and reads no messages. It exists so that a
- * copy of the suite can sign in with Discord and post a plan into a channel,
- * and it only ever posts where the person sharing could post themselves.
+ * It reads no messages. It exists so that a copy of the suite can sign in
+ * with Discord and post a plan into a channel, and it only ever posts where
+ * the person sharing could post themselves. Its one slash command, /render,
+ * is there only when the renderer is set up.
  */
 
-import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { handleRender, renderCommand } from './render/command.ts';
 import { loadConfig } from './config.ts';
 import { openDatabase } from './db.ts';
 import { startHttpServer } from './http.ts';
@@ -24,8 +26,17 @@ const db = openDatabase(config.dbPath);
 // or shares, which needs no privileged intent.
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once(Events.ClientReady, (ready) => {
+client.once(Events.ClientReady, async (ready) => {
   log.info(`connected as ${ready.user.tag} (${ready.user.id})`);
+
+  // Global commands: every server the bot is in gets /render, or loses it
+  // again when the renderer is no longer set up.
+  try {
+    await ready.application.commands.set(config.render ? [renderCommand.toJSON()] : []);
+    log.info(config.render ? '/render is on' : '/render is off (no renderer set up)');
+  } catch (error) {
+    log.error('registering /render failed', error);
+  }
 
   for (const guild of ready.guilds.cache.values()) {
     log.info(`serving ${guild.name} (${guild.id})`);
@@ -35,11 +46,22 @@ client.once(Events.ClientReady, (ready) => {
     const invite = new URL('https://discord.com/oauth2/authorize');
     invite.search = new URLSearchParams({
       client_id: config.appId,
-      scope: 'bot',
+      scope: 'bot applications.commands',
       permissions: String(INVITE_PERMISSIONS),
     }).toString();
     log.info(`not in any server yet. Add it with: ${invite.toString()}`);
   }
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand() || interaction.commandName !== 'render') return;
+  if (config.render === null) {
+    await interaction
+      .reply({ content: 'Rendering is not set up on this bot.', flags: MessageFlags.Ephemeral })
+      .catch(() => {});
+    return;
+  }
+  await handleRender(interaction, config.render);
 });
 
 client.on(Events.GuildCreate, (guild) => {

@@ -2,9 +2,9 @@
   "name": "tactics-suite-discord-bot",
   "version": "1.0.0",
   "private": true,
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
-  "description": "Self-hostable Discord bot for the WoWs Tactics Suite: Connect Discord and Share to Discord",
+  "description": "Self-hostable Discord bot for the WoWs Tactics Suite: Connect Discord, Share to Discord and /render",
   "main": "index.js",
   "engines": {
     "node": ">=24"

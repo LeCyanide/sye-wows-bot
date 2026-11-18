@@ -1,7 +1,7 @@
 /**
  * Headless checks for everything that would otherwise only be exercised by
- * hand against a live Discord connection: the schema, the plan endpoint
- * and the Connect Discord sign-in.
+ * hand against a live Discord connection: the schema, the plan endpoint,
+ * the Connect Discord sign-in and /render (against a fake wows-render).
  *
  *   npm run selftest
  *
@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -19,11 +20,19 @@ import { openDatabase } from '../src/db.ts';
 import { MIGRATIONS } from '../src/migrations.ts';
 import { startHttpServer } from '../src/http.ts';
 import { Linker } from '../src/link.ts';
+import { renderSetup } from '../src/config.ts';
+import { renderReplay, RenderError } from '../src/render/wows-render.ts';
+import {
+  AlreadyQueuedError, DownloadError, MAX_REPLAY_BYTES, QueueFullError, RenderQueue,
+  downloadReplay, failureMessage, refuseAttachment, videoName,
+} from '../src/render/replay.ts';
 
 process.env.LOG_LEVEL = 'error';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tactics-bot-selftest-'));
 const results = [];
+
+const settle = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function check(name, fn) {
   try {
@@ -371,6 +380,139 @@ const PLAN_TOKEN = 'selftest-token-long-enough-to-pass';
   db.close();
 }
 
+// /render. A fake wows-render stands in for the binary: it answers with the
+// error JSON the real CLI writes, or with a few bytes as the MP4.
+{
+  const fake = path.join(dir, 'fake-wows-render.mjs');
+  fs.writeFileSync(fake, [
+    "const mode = process.argv[2];",
+    "const err = (code, message) => { process.stderr.write(JSON.stringify({ error: { code, message } }) + '\\n'); process.exit(1); };",
+    "if (mode === 'ok') { process.stderr.write(JSON.stringify({ stage: 'done', bytes: 7, frames: 3, warnings: [] }) + '\\n'); process.stdout.write('FAKEMP4'); }",
+    "else if (mode === 'old') err('unsupported_version', 'no entity definitions for game version 13.0.0 (build 7) under /srv/wows-data/defs');",
+    "else if (mode === 'hang') setTimeout(() => {}, 60_000);",
+    "else err(mode, 'something on the server at /srv/secret');",
+  ].join('\n'));
+  const binary = (mode) => [process.execPath, fake, mode];
+
+  const dataDir = path.join(dir, 'wows-data');
+  for (const v of ['15_9_0', '15_10_0', '13533378']) {
+    fs.mkdirSync(path.join(dataDir, 'defs', v), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'defs', v, 'entities.xml'), '<root/>');
+  }
+
+  await check('/render refuses anything but a .wowsreplay, and big files, before fetching', () => {
+    assert.equal(refuseAttachment('battle.wowsreplay', 3_000_000), null);
+    assert.equal(refuseAttachment('Battle.WOWSREPLAY', 3_000_000), null);
+    assert.match(refuseAttachment('battle.zip', 1000), /not a replay/);
+    assert.match(refuseAttachment('battle.wowsreplay.exe', 1000), /not a replay/);
+    assert.equal(refuseAttachment('battle.wowsreplay', MAX_REPLAY_BYTES), null);
+    assert.match(refuseAttachment('battle.wowsreplay', MAX_REPLAY_BYTES + 1), /10\.0 MB.*up to 10 MB/);
+  });
+
+  await check('/render names the video after the replay, with only safe characters', () => {
+    assert.equal(videoName('20260604_172336_PASD008-Benson-1945_52_Britain.wowsreplay'),
+      '20260604_172336_PASD008-Benson-1945_52_Britain.mp4');
+    assert.equal(videoName('../../etc/pass wd.wowsreplay'), 'etc_pass_wd.mp4');
+    assert.equal(videoName('.wowsreplay'), 'replay.mp4');
+  });
+
+  await check('/render passes the MP4 through from the binary', async () => {
+    const result = await renderReplay({ input: Buffer.from('replay'), binary: binary('ok'), dataDir, timeoutMs: 10_000 });
+    assert.equal(result.mp4.toString(), 'FAKEMP4');
+    assert.equal(result.frames, 3);
+  });
+
+  await check('an unsupported version names it and the versions the host has, never the path', async () => {
+    const error = await renderReplay({ input: Buffer.from('x'), binary: binary('old'), dataDir, timeoutMs: 10_000 }).catch((e) => e);
+    assert.ok(error instanceof RenderError);
+    const message = await failureMessage(error, dataDir);
+    assert.match(message, /13\.0\.0 \(build 7\)/);
+    assert.match(message, /I can render 15\.9\.0, 15\.10\.0\./);
+    assert.doesNotMatch(message, /srv|13533378/);
+  });
+
+  await check('an unsupported version still answers when the data directory is unreadable', async () => {
+    const message = await failureMessage(new RenderError('unsupported_version', 'no entity definitions for game version 16.0.0 under /x'), path.join(dir, 'nope'));
+    assert.equal(message, 'This replay is from a game version I cannot render yet (16.0.0).');
+  });
+
+  await check('every render failure maps to a short message without server details', async () => {
+    const expected = {
+      bad_replay: /not look like a valid/,
+      too_large: /upload limit/,
+      missing_data: /failed on my side/,
+      io: /failed on my side/,
+      internal: /failed on my side/,
+      made_up_code: /failed on my side/,
+    };
+    for (const [code, pattern] of Object.entries(expected)) {
+      const error = await renderReplay({ input: Buffer.from('x'), binary: binary(code), dataDir, timeoutMs: 10_000 }).catch((e) => e);
+      assert.ok(error instanceof RenderError, code);
+      const message = await failureMessage(error, dataDir);
+      assert.match(message, pattern, code);
+      assert.doesNotMatch(message, /srv|secret/, code);
+    }
+    const timedOut = await renderReplay({ input: Buffer.from('x'), binary: binary('hang'), dataDir, timeoutMs: 300 }).catch((e) => e);
+    assert.equal(timedOut.code, 'timeout');
+    assert.match(await failureMessage(timedOut, dataDir), /too long/);
+    const missing = await renderReplay({ input: Buffer.from('x'), binary: path.join(dir, 'no-such-binary'), dataDir }).catch((e) => e);
+    assert.equal(missing.code, 'spawn_failed');
+    assert.match(await failureMessage(missing, dataDir), /failed on my side/);
+    assert.match(await failureMessage(new Error('boom'), dataDir), /failed on my side/);
+  });
+
+  await check('the render queue runs one at a time, one per member, and has a length limit', async () => {
+    const queue = new RenderQueue(1, 2);
+    const order = [];
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const positions = [];
+    const a = queue.run('a', async () => { order.push('a start'); await gate; order.push('a end'); return 'A'; });
+    const b = queue.run('b', async () => { order.push('b'); return 'B'; }, (p) => positions.push(['b', p]));
+    const c = queue.run('c', async () => { order.push('c'); return 'C'; }, (p) => positions.push(['c', p]));
+    await assert.rejects(queue.run('a', async () => 'again'), AlreadyQueuedError);
+    await assert.rejects(queue.run('d', async () => 'D'), QueueFullError);
+    await settle(10);
+    assert.deepEqual(order, ['a start']);
+    release();
+    assert.deepEqual(await Promise.all([a, b, c]), ['A', 'B', 'C']);
+    assert.deepEqual(order, ['a start', 'a end', 'b', 'c']);
+    assert.deepEqual(positions, [['b', 1], ['c', 2]]);
+    // A failing job frees its slot and its member.
+    await assert.rejects(queue.run('a', async () => { throw new Error('x'); }));
+    assert.equal(await queue.run('a', async () => 'ok'), 'ok');
+  });
+
+  await check('/render is on only with both settings and a data folder holding defs/', () => {
+    const setup = (bin, data) => {
+      process.env.WOWS_RENDER_BIN = bin;
+      process.env.WOWS_DATA_DIR = data;
+      try { return renderSetup(); } finally { delete process.env.WOWS_RENDER_BIN; delete process.env.WOWS_DATA_DIR; }
+    };
+    assert.equal(setup('', ''), null);
+    assert.equal(setup('/usr/local/bin/wows-render', ''), null);
+    assert.equal(setup('', dataDir), null);
+    assert.equal(setup('/usr/local/bin/wows-render', path.join(dir, 'empty-data')), null);
+    assert.deepEqual(setup(' /usr/local/bin/wows-render ', dataDir), { bin: '/usr/local/bin/wows-render', dataDir });
+  });
+
+  await check('the replay download stops past the size cap, whatever the reported size', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/big') { res.write(Buffer.alloc(600)); res.end(Buffer.alloc(600)); }
+      else if (req.url === '/gone') { res.statusCode = 404; res.end(); }
+      else res.end('replay bytes');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      assert.equal((await downloadReplay(`${base}/ok`, 1000)).toString(), 'replay bytes');
+      await assert.rejects(downloadReplay(`${base}/big`, 1000), DownloadError);
+      await assert.rejects(downloadReplay(`${base}/gone`, 1000), /HTTP 404/);
+    } finally {
+      server.close();
+    }
+  });
+}
 
 let failed = 0;
 for (const [ok, name, error] of results) {

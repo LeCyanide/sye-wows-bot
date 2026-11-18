@@ -6,6 +6,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { log } from './log.ts';
 
 export interface Config {
@@ -25,6 +26,12 @@ export interface Config {
    * reverse proxy in front does it, which is the usual case.
    */
   readonly tls: { readonly cert: string; readonly key: string } | null;
+  /**
+   * The wows-render binary and the game data folder, when /render is on. Null
+   * when either is unset or the data folder has no defs/, and then the
+   * command is not registered.
+   */
+  readonly render: { readonly bin: string; readonly dataDir: string } | null;
 }
 
 function required(name: string): string {
@@ -51,6 +58,21 @@ function tlsFiles(): Config['tls'] {
     }
   }
   return { cert, key };
+}
+
+export function renderSetup(): Config['render'] {
+  const bin = process.env.WOWS_RENDER_BIN?.trim() || '';
+  const dataDir = process.env.WOWS_DATA_DIR?.trim() || '';
+  if (bin === '' && dataDir === '') return null;
+  if (bin === '' || dataDir === '') {
+    log.warn('/render is off: set both WOWS_RENDER_BIN and WOWS_DATA_DIR.');
+    return null;
+  }
+  if (!existsSync(path.join(dataDir, 'defs'))) {
+    log.warn(`/render is off: ${dataDir} has no defs/ folder. Build the data pack first (README, "Replays to video").`);
+    return null;
+  }
+  return { bin, dataDir };
 }
 
 export function loadConfig(): Config {
@@ -88,5 +110,6 @@ export function loadConfig(): Config {
     // it is not reachable from anywhere else. The Docker image sets 0.0.0.0.
     httpHost: process.env.HTTP_HOST?.trim() || '127.0.0.1',
     tls: tlsFiles(),
+    render: renderSetup(),
   };
 }
