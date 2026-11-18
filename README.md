@@ -279,4 +279,4 @@ npm run dev         # runs from source, restarts on changes
 
 ## License
 
-MIT. See `LICENSE`.
+GPL-3.0, like replay-parser, whose code it carries for `/render`. See `LICENSE`.
